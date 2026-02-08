@@ -18,11 +18,16 @@ const productValidation = [
   body('isFeatured').optional().isBoolean(),
   body('isNewArrival').optional().isBoolean(),
   body('isActive').optional().isBoolean(),
+  body('isCombo').optional().isBoolean(),
   body('variants').optional().isArray(),
-  body('variants.*.size').notEmpty().withMessage('Variant size is required'),
+  body('variants.*.size').optional().notEmpty().withMessage('Variant size is required'),
   body('variants.*.stock').optional().isInt({ min: 0 }),
   body('images').optional().isArray(),
-  body('images.*.url').notEmpty().withMessage('Image URL is required')
+  body('images.*.url').notEmpty().withMessage('Image URL is required'),
+  body('comboItems').optional().isArray(),
+  body('comboItems.*.childProductId').optional().isUUID(),
+  body('comboItems.*.quantity').optional().isInt({ min: 1 }),
+  body('comboItems.*.label').optional().isString().isLength({ max: 100 })
 ];
 
 const updateProductValidation = [
@@ -34,7 +39,12 @@ const updateProductValidation = [
   body('description').optional().isString(),
   body('isFeatured').optional().isBoolean(),
   body('isNewArrival').optional().isBoolean(),
-  body('isActive').optional().isBoolean()
+  body('isActive').optional().isBoolean(),
+  body('isCombo').optional().isBoolean(),
+  body('comboItems').optional().isArray(),
+  body('comboItems.*.childProductId').optional().isUUID(),
+  body('comboItems.*.quantity').optional().isInt({ min: 1 }),
+  body('comboItems.*.label').optional().isString().isLength({ max: 100 })
 ];
 
 // Public routes

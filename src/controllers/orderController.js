@@ -10,6 +10,8 @@ const {
   DiscountCode,
   User,
   StockMovement,
+  ComboItem,
+  OrderComboSelection,
   sequelize
 } = require('../models');
 const { successResponse, errorResponse, paginatedResponse } = require('../utils/response.utils');
@@ -57,7 +59,18 @@ const createOrder = async (req, res) => {
 
     for (const item of items) {
       const product = await Product.findByPk(item.productId, {
-        include: [{ model: ProductVariant, as: 'variants' }]
+        include: [
+          { model: ProductVariant, as: 'variants' },
+          {
+            model: ComboItem,
+            as: 'comboItems',
+            include: [{
+              model: Product,
+              as: 'childProduct',
+              include: [{ model: ProductVariant, as: 'variants' }]
+            }]
+          }
+        ]
       });
 
       if (!product || !product.isActive) {
@@ -65,42 +78,113 @@ const createOrder = async (req, res) => {
         return errorResponse(res, `Product ${item.productId} not found or unavailable`, 400);
       }
 
-      // Get variant if specified
-      let variant = null;
-      let unitPrice = parseFloat(product.salePrice || product.basePrice);
+      if (product.isCombo) {
+        // Handle combo product
+        let unitPrice = parseFloat(product.salePrice || product.basePrice);
+        const totalPrice = unitPrice * item.quantity;
+        subtotal += totalPrice;
 
-      if (item.variantId) {
-        variant = product.variants.find(v => v.id === item.variantId && v.isActive);
-        if (!variant) {
+        // Validate combo selections
+        if (!item.comboSelections || item.comboSelections.length === 0) {
           await transaction.rollback();
-          return errorResponse(res, `Variant ${item.variantId} not found or unavailable`, 400);
+          return errorResponse(res, `Combo selections are required for "${product.name}"`, 400);
         }
 
-        // Check stock
-        if (variant.stock < item.quantity) {
-          await transaction.rollback();
-          return errorResponse(res, `Insufficient stock for ${product.name} (${variant.size}/${variant.color})`, 400);
+        // Validate each combo selection and check stock
+        const comboSelectionsData = [];
+        for (const selection of item.comboSelections) {
+          const comboItem = product.comboItems.find(ci => ci.id === selection.comboItemId);
+          if (!comboItem) {
+            await transaction.rollback();
+            return errorResponse(res, `Invalid combo item selection for "${product.name}"`, 400);
+          }
+
+          const childProduct = comboItem.childProduct;
+          if (!childProduct) {
+            await transaction.rollback();
+            return errorResponse(res, `Child product not found in combo "${product.name}"`, 400);
+          }
+
+          let childVariant = null;
+          if (selection.variantId) {
+            childVariant = childProduct.variants.find(v => v.id === selection.variantId && v.isActive);
+            if (!childVariant) {
+              await transaction.rollback();
+              return errorResponse(res, `Variant not found for "${childProduct.name}" in combo`, 400);
+            }
+
+            const requiredStock = comboItem.quantity * item.quantity;
+            if (childVariant.stock < requiredStock) {
+              await transaction.rollback();
+              return errorResponse(res, `Insufficient stock for "${childProduct.name}" (${childVariant.size}/${childVariant.color})`, 400);
+            }
+          }
+
+          comboSelectionsData.push({
+            comboItemId: comboItem.id,
+            childProductId: childProduct.id,
+            childProduct,
+            childVariant,
+            comboItemQuantity: comboItem.quantity,
+            productName: childProduct.name,
+            productSku: childVariant?.sku || childProduct.sku,
+            size: childVariant?.size || null,
+            color: childVariant?.color || null
+          });
         }
 
-        // Apply price adjustment
-        unitPrice += parseFloat(variant.priceAdjustment || 0);
+        orderItems.push({
+          productId: product.id,
+          productVariantId: null,
+          productName: product.name,
+          productSku: product.sku,
+          size: null,
+          color: null,
+          quantity: item.quantity,
+          unitPrice,
+          totalPrice,
+          variant: null,
+          isCombo: true,
+          comboSelectionsData
+        });
+      } else {
+        // Handle regular product (existing logic)
+        let variant = null;
+        let unitPrice = parseFloat(product.salePrice || product.basePrice);
+
+        if (item.variantId) {
+          variant = product.variants.find(v => v.id === item.variantId && v.isActive);
+          if (!variant) {
+            await transaction.rollback();
+            return errorResponse(res, `Variant ${item.variantId} not found or unavailable`, 400);
+          }
+
+          // Check stock
+          if (variant.stock < item.quantity) {
+            await transaction.rollback();
+            return errorResponse(res, `Insufficient stock for ${product.name} (${variant.size}/${variant.color})`, 400);
+          }
+
+          // Apply price adjustment
+          unitPrice += parseFloat(variant.priceAdjustment || 0);
+        }
+
+        const totalPrice = unitPrice * item.quantity;
+        subtotal += totalPrice;
+
+        orderItems.push({
+          productId: product.id,
+          productVariantId: variant?.id,
+          productName: product.name,
+          productSku: variant?.sku || product.sku,
+          size: variant?.size || item.size,
+          color: variant?.color || item.color,
+          quantity: item.quantity,
+          unitPrice,
+          totalPrice,
+          variant
+        });
       }
-
-      const totalPrice = unitPrice * item.quantity;
-      subtotal += totalPrice;
-
-      orderItems.push({
-        productId: product.id,
-        productVariantId: variant?.id,
-        productName: product.name,
-        productSku: variant?.sku || product.sku,
-        size: variant?.size || item.size,
-        color: variant?.color || item.color,
-        quantity: item.quantity,
-        unitPrice,
-        totalPrice,
-        variant // Keep reference for stock update
-      });
     }
 
     // Handle discount code
@@ -186,7 +270,7 @@ const createOrder = async (req, res) => {
 
     // Create order items
     for (const item of orderItems) {
-      await OrderItem.create({
+      const orderItem = await OrderItem.create({
         orderId: order.id,
         productId: item.productId,
         productVariantId: item.productVariantId,
@@ -199,32 +283,81 @@ const createOrder = async (req, res) => {
         totalPrice: item.totalPrice
       }, { transaction });
 
-      // Update variant stock
-      if (item.variant) {
-        const previousStock = item.variant.stock;
-        const newStock = previousStock - item.quantity;
-        await item.variant.decrement('stock', { by: item.quantity, transaction });
+      if (item.isCombo && item.comboSelectionsData) {
+        // Handle combo product: create selections and decrement child variant stock
+        for (const sel of item.comboSelectionsData) {
+          await OrderComboSelection.create({
+            orderItemId: orderItem.id,
+            comboItemId: sel.comboItemId,
+            childProductId: sel.childProductId,
+            productVariantId: sel.childVariant?.id || null,
+            productName: sel.productName,
+            productSku: sel.productSku,
+            size: sel.size,
+            color: sel.color,
+            quantity: sel.comboItemQuantity
+          }, { transaction });
 
-        // Create stock movement record
-        await StockMovement.create({
-          productVariantId: item.variant.id,
-          type: STOCK_MOVEMENT_TYPES.SALE,
-          quantity: -item.quantity,
-          previousStock,
-          newStock,
-          reference: 'order',
-          referenceId: order.id,
-          note: `Sold via order ${orderNumber}`,
-          createdBy: userId
-        }, { transaction });
+          // Decrement stock on child variant
+          if (sel.childVariant) {
+            const decrementQty = sel.comboItemQuantity * item.quantity;
+            const previousStock = sel.childVariant.stock;
+            const newStock = previousStock - decrementQty;
+            await sel.childVariant.decrement('stock', { by: decrementQty, transaction });
+
+            await StockMovement.create({
+              productVariantId: sel.childVariant.id,
+              type: STOCK_MOVEMENT_TYPES.SALE,
+              quantity: -decrementQty,
+              previousStock,
+              newStock,
+              reference: 'order',
+              referenceId: order.id,
+              note: `Sold via combo order ${orderNumber} (combo: ${item.productName})`,
+              createdBy: userId
+            }, { transaction });
+          }
+
+          // Increment sold count on child product
+          await Product.increment('soldCount', {
+            by: sel.comboItemQuantity * item.quantity,
+            where: { id: sel.childProductId },
+            transaction
+          });
+        }
+
+        // Also increment sold count on the combo product itself
+        await Product.increment('soldCount', {
+          by: item.quantity,
+          where: { id: item.productId },
+          transaction
+        });
+      } else {
+        // Regular product stock handling
+        if (item.variant) {
+          const previousStock = item.variant.stock;
+          const newStock = previousStock - item.quantity;
+          await item.variant.decrement('stock', { by: item.quantity, transaction });
+
+          await StockMovement.create({
+            productVariantId: item.variant.id,
+            type: STOCK_MOVEMENT_TYPES.SALE,
+            quantity: -item.quantity,
+            previousStock,
+            newStock,
+            reference: 'order',
+            referenceId: order.id,
+            note: `Sold via order ${orderNumber}`,
+            createdBy: userId
+          }, { transaction });
+        }
+
+        await Product.increment('soldCount', {
+          by: item.quantity,
+          where: { id: item.productId },
+          transaction
+        });
       }
-
-      // Update product sold count
-      await Product.increment('soldCount', {
-        by: item.quantity,
-        where: { id: item.productId },
-        transaction
-      });
     }
 
     // Create shipping address
@@ -690,18 +823,30 @@ async function getOrderWithDetails(orderId) {
       {
         model: OrderItem,
         as: 'items',
-        include: [{
-          model: Product,
-          as: 'product',
-          attributes: ['id', 'name', 'slug'],
-          include: [{
-            model: ProductImage,
-            as: 'images',
-            where: { isPrimary: true },
+        include: [
+          {
+            model: Product,
+            as: 'product',
+            attributes: ['id', 'name', 'slug', 'isCombo'],
+            include: [{
+              model: ProductImage,
+              as: 'images',
+              where: { isPrimary: true },
+              required: false,
+              attributes: ['url', 'thumbnailUrl']
+            }]
+          },
+          {
+            model: OrderComboSelection,
+            as: 'comboSelections',
             required: false,
-            attributes: ['url', 'thumbnailUrl']
-          }]
-        }]
+            include: [{
+              model: Product,
+              as: 'childProduct',
+              attributes: ['id', 'name', 'slug']
+            }]
+          }
+        ]
       },
       {
         model: ShippingAddress,
@@ -743,32 +888,85 @@ function getValidStatusTransitions(currentStatus) {
 async function restoreOrderStock(orderId, transaction) {
   const orderItems = await OrderItem.findAll({
     where: { orderId },
-    include: [{ model: ProductVariant, as: 'variant' }]
+    include: [
+      { model: ProductVariant, as: 'variant' },
+      { model: OrderComboSelection, as: 'comboSelections', required: false }
+    ]
   });
 
   for (const item of orderItems) {
-    if (item.productVariantId) {
-      await ProductVariant.increment('stock', {
+    if (item.comboSelections && item.comboSelections.length > 0) {
+      // Combo product: restore stock on child variants
+      for (const sel of item.comboSelections) {
+        if (sel.productVariantId) {
+          const variant = await ProductVariant.findByPk(sel.productVariantId, { transaction });
+          const restoreQty = sel.quantity * item.quantity;
+          const previousStock = variant ? variant.stock : 0;
+          const newStock = previousStock + restoreQty;
+
+          await ProductVariant.increment('stock', {
+            by: restoreQty,
+            where: { id: sel.productVariantId },
+            transaction
+          });
+
+          await StockMovement.create({
+            productVariantId: sel.productVariantId,
+            type: STOCK_MOVEMENT_TYPES.RETURN,
+            quantity: restoreQty,
+            previousStock,
+            newStock,
+            reference: 'order_cancellation',
+            referenceId: orderId,
+            note: 'Stock restored due to combo order cancellation'
+          }, { transaction });
+        }
+
+        // Decrement sold count on child product
+        await Product.decrement('soldCount', {
+          by: sel.quantity * item.quantity,
+          where: { id: sel.childProductId },
+          transaction
+        });
+      }
+
+      // Decrement sold count on combo product itself
+      await Product.decrement('soldCount', {
         by: item.quantity,
-        where: { id: item.productVariantId },
+        where: { id: item.productId },
         transaction
       });
+    } else {
+      // Regular product
+      if (item.productVariantId) {
+        const variant = await ProductVariant.findByPk(item.productVariantId, { transaction });
+        const previousStock = variant ? variant.stock : 0;
+        const newStock = previousStock + item.quantity;
 
-      await StockMovement.create({
-        productVariantId: item.productVariantId,
-        type: STOCK_MOVEMENT_TYPES.RETURN,
-        quantity: item.quantity,
-        referenceType: 'order_cancellation',
-        referenceId: orderId,
-        notes: 'Stock restored due to order cancellation'
-      }, { transaction });
+        await ProductVariant.increment('stock', {
+          by: item.quantity,
+          where: { id: item.productVariantId },
+          transaction
+        });
+
+        await StockMovement.create({
+          productVariantId: item.productVariantId,
+          type: STOCK_MOVEMENT_TYPES.RETURN,
+          quantity: item.quantity,
+          previousStock,
+          newStock,
+          reference: 'order_cancellation',
+          referenceId: orderId,
+          note: 'Stock restored due to order cancellation'
+        }, { transaction });
+      }
+
+      await Product.decrement('soldCount', {
+        by: item.quantity,
+        where: { id: item.productId },
+        transaction
+      });
     }
-
-    await Product.decrement('soldCount', {
-      by: item.quantity,
-      where: { id: item.productId },
-      transaction
-    });
   }
 }
 

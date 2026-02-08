@@ -11,7 +11,12 @@ const createOrderValidation = [
   body('items').isArray({ min: 1 }).withMessage('Order must contain at least one item'),
   body('items.*.productId').isUUID().withMessage('Product ID must be a valid UUID'),
   body('items.*.quantity').isInt({ min: 1 }).withMessage('Quantity must be at least 1'),
-  body('items.*.variantId').optional().isUUID(),
+  body('items.*.variantId').optional({ nullable: true }).isUUID(),
+  body('items.*.isCombo').optional().isBoolean(),
+  body('items.*.comboSelections').optional().isArray(),
+  body('items.*.comboSelections.*.comboItemId').optional().isUUID(),
+  body('items.*.comboSelections.*.childProductId').optional().isUUID(),
+  body('items.*.comboSelections.*.variantId').optional({ nullable: true }).isUUID(),
 
   body('shippingAddress').notEmpty().withMessage('Shipping address is required'),
   body('shippingAddress.recipientName').trim().notEmpty().withMessage('Recipient name is required'),
