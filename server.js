@@ -27,6 +27,7 @@ app.use(helmet({
 app.use(cors({
   origin: [
     process.env.CUSTOMER_URL || 'http://localhost:5173',
+    'https://atandrila.com',
     process.env.ADMIN_URL || 'http://localhost:5174'
   ],
   credentials: true,

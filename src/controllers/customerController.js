@@ -103,7 +103,7 @@ const getCustomerById = async (req, res) => {
       include: [{
         model: OrderItem,
         as: 'items',
-        attributes: ['id', 'productName', 'quantity', 'price']
+        attributes: ['id', 'productName', 'quantity', 'unitPrice', 'totalPrice']
       }],
       order: [['createdAt', 'DESC']],
       limit: 50

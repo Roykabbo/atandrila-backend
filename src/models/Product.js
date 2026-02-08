@@ -107,6 +107,11 @@ module.exports = (sequelize) => {
       type: DataTypes.TEXT,
       allowNull: true,
       field: 'meta_description'
+    },
+    isCombo: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: false,
+      field: 'is_combo'
     }
   }, {
     tableName: 'products',

@@ -1,5 +1,5 @@
 const { Op } = require('sequelize');
-const { Product, ProductImage, ProductVariant, Category, sequelize } = require('../models');
+const { Product, ProductImage, ProductVariant, Category, ComboItem, sequelize } = require('../models');
 const { successResponse, errorResponse, paginatedResponse } = require('../utils/response.utils');
 const { generateSlug, getPaginationParams, getSortParams } = require('../utils/helpers');
 const { PAGINATION } = require('../config/constants');
@@ -171,7 +171,24 @@ const getProductBySlug = async (req, res) => {
           where: { isActive: true },
           required: false,
           attributes: ['id', 'sku', 'size', 'color', 'colorCode', 'priceAdjustment', 'stock', 'lowStockThreshold']
+        },
+        {
+          model: ComboItem,
+          as: 'comboItems',
+          required: false,
+          include: [{
+            model: Product,
+            as: 'childProduct',
+            attributes: ['id', 'name', 'slug', 'sku', 'basePrice', 'salePrice'],
+            include: [
+              { model: ProductImage, as: 'images', attributes: ['id', 'url', 'thumbnailUrl', 'altText', 'isPrimary', 'sortOrder', 'colorName'] },
+              { model: ProductVariant, as: 'variants', where: { isActive: true }, required: false, attributes: ['id', 'sku', 'size', 'color', 'colorCode', 'priceAdjustment', 'stock'] }
+            ]
+          }]
         }
+      ],
+      order: [
+        [{ model: ComboItem, as: 'comboItems' }, 'sortOrder', 'ASC']
       ]
     });
 
@@ -300,7 +317,9 @@ const createProduct = async (req, res) => {
       metaTitle,
       metaDescription,
       images,
-      variants
+      variants,
+      isCombo,
+      comboItems
     } = req.body;
 
     // Generate slug from name
@@ -336,6 +355,7 @@ const createProduct = async (req, res) => {
       isFeatured: isFeatured || false,
       isNewArrival: isNewArrival || false,
       isActive: isActive !== false,
+      isCombo: isCombo || false,
       sortOrder: sortOrder || 0,
       metaTitle,
       metaDescription
@@ -355,8 +375,8 @@ const createProduct = async (req, res) => {
       await ProductImage.bulkCreate(imageRecords, { transaction });
     }
 
-    // Create product variants
-    if (variants && variants.length > 0) {
+    // Create product variants (skip for combo products)
+    if (!isCombo && variants && variants.length > 0) {
       const variantRecords = variants.map(variant => ({
         productId: product.id,
         sku: variant.sku || `${sku}-${variant.size}-${variant.color || 'DEF'}`.toUpperCase(),
@@ -371,15 +391,43 @@ const createProduct = async (req, res) => {
       await ProductVariant.bulkCreate(variantRecords, { transaction });
     }
 
+    // Create combo items if this is a combo product
+    if (isCombo && comboItems && comboItems.length > 0) {
+      const comboRecords = comboItems.map((item, index) => ({
+        comboProductId: product.id,
+        childProductId: item.childProductId,
+        quantity: item.quantity || 1,
+        label: item.label || null,
+        sortOrder: item.sortOrder ?? index
+      }));
+      await ComboItem.bulkCreate(comboRecords, { transaction });
+    }
+
     await transaction.commit();
 
     // Fetch complete product with associations
+    const includeList = [
+      { model: Category, as: 'category' },
+      { model: ProductImage, as: 'images' },
+      { model: ProductVariant, as: 'variants' }
+    ];
+    if (isCombo) {
+      includeList.push({
+        model: ComboItem,
+        as: 'comboItems',
+        include: [{
+          model: Product,
+          as: 'childProduct',
+          attributes: ['id', 'name', 'slug', 'sku', 'basePrice', 'salePrice'],
+          include: [
+            { model: ProductImage, as: 'images' },
+            { model: ProductVariant, as: 'variants', where: { isActive: true }, required: false }
+          ]
+        }]
+      });
+    }
     const completeProduct = await Product.findByPk(product.id, {
-      include: [
-        { model: Category, as: 'category' },
-        { model: ProductImage, as: 'images' },
-        { model: ProductVariant, as: 'variants' }
-      ]
+      include: includeList
     });
 
     return successResponse(res, completeProduct, 'Product created successfully', 201);
@@ -450,8 +498,9 @@ const updateProduct = async (req, res) => {
       }
     }
 
-    // Update variants if provided
-    if (updateData.variants) {
+    // Update variants if provided (skip for combo products)
+    const productIsCombo = updateData.isCombo !== undefined ? updateData.isCombo : product.isCombo;
+    if (!productIsCombo && updateData.variants) {
       await ProductVariant.destroy({ where: { productId: id }, transaction });
       if (updateData.variants.length > 0) {
         const variantRecords = updateData.variants.map(variant => ({
@@ -469,15 +518,46 @@ const updateProduct = async (req, res) => {
       }
     }
 
+    // Update combo items if this is a combo product
+    if (productIsCombo && updateData.comboItems) {
+      await ComboItem.destroy({ where: { comboProductId: id }, transaction });
+      if (updateData.comboItems.length > 0) {
+        const comboRecords = updateData.comboItems.map((item, index) => ({
+          comboProductId: id,
+          childProductId: item.childProductId,
+          quantity: item.quantity || 1,
+          label: item.label || null,
+          sortOrder: item.sortOrder ?? index
+        }));
+        await ComboItem.bulkCreate(comboRecords, { transaction });
+      }
+    }
+
     await transaction.commit();
 
     // Fetch updated product with associations
+    const includeList = [
+      { model: Category, as: 'category' },
+      { model: ProductImage, as: 'images' },
+      { model: ProductVariant, as: 'variants' }
+    ];
+    if (productIsCombo) {
+      includeList.push({
+        model: ComboItem,
+        as: 'comboItems',
+        include: [{
+          model: Product,
+          as: 'childProduct',
+          attributes: ['id', 'name', 'slug', 'sku', 'basePrice', 'salePrice'],
+          include: [
+            { model: ProductImage, as: 'images' },
+            { model: ProductVariant, as: 'variants', where: { isActive: true }, required: false }
+          ]
+        }]
+      });
+    }
     const updatedProduct = await Product.findByPk(id, {
-      include: [
-        { model: Category, as: 'category' },
-        { model: ProductImage, as: 'images' },
-        { model: ProductVariant, as: 'variants' }
-      ]
+      include: includeList
     });
 
     return successResponse(res, updatedProduct, 'Product updated successfully');
@@ -506,6 +586,9 @@ const deleteProduct = async (req, res) => {
       // Hard delete - removes from database
       await ProductImage.destroy({ where: { productId: id } });
       await ProductVariant.destroy({ where: { productId: id } });
+      await ComboItem.destroy({ where: { comboProductId: id } });
+      // Also remove this product from any combos it's a child of
+      await ComboItem.destroy({ where: { childProductId: id } });
       await product.destroy();
       return successResponse(res, null, 'Product permanently deleted');
     } else {
@@ -622,10 +705,10 @@ const getAdminProducts = async (req, res) => {
       distinct: true
     });
 
-    // Calculate total stock for each product
+    // Calculate total stock for each product (combos don't have their own stock)
     const productsWithStock = products.map(p => {
       const productData = p.toJSON();
-      productData.totalStock = productData.variants?.reduce((sum, v) => sum + (v.stock || 0), 0) || 0;
+      productData.totalStock = productData.isCombo ? null : (productData.variants?.reduce((sum, v) => sum + (v.stock || 0), 0) || 0);
       return productData;
     });
 

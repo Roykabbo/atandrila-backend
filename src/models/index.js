@@ -31,6 +31,8 @@ const ShippingAddress = require('./ShippingAddress')(sequelize);
 const DiscountCode = require('./DiscountCode')(sequelize);
 const OrderStatusHistory = require('./OrderStatusHistory')(sequelize);
 const StockMovement = require('./StockMovement')(sequelize);
+const ComboItem = require('./ComboItem')(sequelize);
+const OrderComboSelection = require('./OrderComboSelection')(sequelize);
 
 // Define associations
 
@@ -90,6 +92,18 @@ StockMovement.belongsTo(ProductVariant, { foreignKey: 'productVariantId', as: 'v
 User.hasMany(StockMovement, { foreignKey: 'createdBy', as: 'stockMovements' });
 StockMovement.belongsTo(User, { foreignKey: 'createdBy', as: 'createdByUser' });
 
+// Combo associations
+Product.hasMany(ComboItem, { foreignKey: 'comboProductId', as: 'comboItems', onDelete: 'CASCADE' });
+ComboItem.belongsTo(Product, { foreignKey: 'comboProductId', as: 'comboProduct' });
+ComboItem.belongsTo(Product, { foreignKey: 'childProductId', as: 'childProduct' });
+
+// OrderComboSelection associations
+OrderItem.hasMany(OrderComboSelection, { foreignKey: 'orderItemId', as: 'comboSelections', onDelete: 'CASCADE' });
+OrderComboSelection.belongsTo(OrderItem, { foreignKey: 'orderItemId', as: 'orderItem' });
+OrderComboSelection.belongsTo(ComboItem, { foreignKey: 'comboItemId', as: 'comboItem' });
+OrderComboSelection.belongsTo(Product, { foreignKey: 'childProductId', as: 'childProduct' });
+OrderComboSelection.belongsTo(ProductVariant, { foreignKey: 'productVariantId', as: 'variant' });
+
 const db = {
   sequelize,
   Sequelize,
@@ -103,7 +117,9 @@ const db = {
   ShippingAddress,
   DiscountCode,
   OrderStatusHistory,
-  StockMovement
+  StockMovement,
+  ComboItem,
+  OrderComboSelection
 };
 
 module.exports = db;

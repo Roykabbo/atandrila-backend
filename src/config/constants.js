@@ -48,10 +48,17 @@ module.exports = {
     DAMAGE: 'damage'
   },
 
-  // Image settings
+  // Media settings (images and videos)
   IMAGE: {
-    MAX_SIZE: 5 * 1024 * 1024, // 5MB
-    ALLOWED_TYPES: ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'],
+    MAX_SIZE: Infinity, // No file size limit
+    ALLOWED_TYPES: [
+      // Images
+      'image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif',
+      // Videos
+      'video/mp4', 'video/webm', 'video/ogg', 'video/quicktime', 'video/x-msvideo', 'video/x-ms-wmv'
+    ],
+    ALLOWED_IMAGE_TYPES: ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif'],
+    ALLOWED_VIDEO_TYPES: ['video/mp4', 'video/webm', 'video/ogg', 'video/quicktime', 'video/x-msvideo', 'video/x-ms-wmv'],
     PRODUCT_SIZES: {
       thumbnail: { width: 150, height: 150 },
       small: { width: 300, height: 400 },

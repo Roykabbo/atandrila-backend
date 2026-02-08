@@ -60,11 +60,5 @@ module.exports = {
       underscored: true,
       freezeTableName: true
     },
-    dialectOptions: {
-      ssl: {
-        require: true,
-        rejectUnauthorized: false
-      }
-    }
   }
 };

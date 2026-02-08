@@ -1,4 +1,7 @@
 const multer = require('multer');
+const path = require('path');
+const fs = require('fs').promises;
+const { v4: uuidv4 } = require('uuid');
 const { IMAGE } = require('../config/constants');
 const { errorResponse } = require('../utils/response.utils');
 const imageService = require('../services/imageService');
@@ -15,12 +18,32 @@ const fileFilter = (req, file, cb) => {
   }
 };
 
-// Create multer instance
+// Helper to check if file is a video
+const isVideo = (mimetype) => IMAGE.ALLOWED_VIDEO_TYPES?.includes(mimetype);
+
+// Helper to save video file
+const saveVideoFile = async (buffer, originalname, folder = 'products') => {
+  const uploadDir = path.join(process.env.UPLOAD_PATH || './uploads', folder);
+  await fs.mkdir(uploadDir, { recursive: true });
+
+  const ext = path.extname(originalname).toLowerCase();
+  const filename = `${uuidv4()}${ext}`;
+  const filepath = path.join(uploadDir, filename);
+
+  await fs.writeFile(filepath, buffer);
+
+  return {
+    url: `/uploads/${folder}/${filename}`,
+    thumbnailUrl: null, // Videos don't have thumbnails for now
+    isVideo: true
+  };
+};
+
+// Create multer instance - no file size limit
 const upload = multer({
   storage,
   fileFilter,
   limits: {
-    fileSize: IMAGE.MAX_SIZE,
     files: 10 // Maximum 10 files per request
   }
 });
@@ -44,7 +67,7 @@ const uploadCategoryImage = upload.fields([
 ]);
 
 /**
- * Process uploaded product images and attach URLs to request
+ * Process uploaded product images/videos and attach URLs to request
  */
 const processProductImages = async (req, res, next) => {
   try {
@@ -56,27 +79,40 @@ const processProductImages = async (req, res, next) => {
     const processedImages = [];
 
     for (const file of files) {
-      // Validate image
-      const validation = await imageService.validateImage(file.buffer, file.mimetype);
-      if (!validation.valid) {
-        return errorResponse(res, validation.errors.join('. '), 400);
-      }
+      // Check if it's a video
+      if (isVideo(file.mimetype)) {
+        // Save video directly without processing
+        const result = await saveVideoFile(file.buffer, file.originalname, 'products');
+        processedImages.push({
+          url: result.url,
+          thumbnailUrl: result.thumbnailUrl,
+          altText: file.originalname.replace(/\.[^/.]+$/, ''),
+          isVideo: true
+        });
+      } else {
+        // Validate and process image
+        const validation = await imageService.validateImage(file.buffer, file.mimetype);
+        if (!validation.valid) {
+          return errorResponse(res, validation.errors.join('. '), 400);
+        }
 
-      // Process and save image
-      const result = await imageService.processProductImage(file.buffer, file.originalname);
-      processedImages.push({
-        url: result.url,
-        thumbnailUrl: result.thumbnailUrl,
-        altText: file.originalname.replace(/\.[^/.]+$/, ''),
-        sizes: result.sizes
-      });
+        // Process and save image
+        const result = await imageService.processProductImage(file.buffer, file.originalname);
+        processedImages.push({
+          url: result.url,
+          thumbnailUrl: result.thumbnailUrl,
+          altText: file.originalname.replace(/\.[^/.]+$/, ''),
+          sizes: result.sizes,
+          isVideo: false
+        });
+      }
     }
 
     req.processedImages = processedImages;
     next();
   } catch (error) {
-    console.error('Error processing product images:', error);
-    return errorResponse(res, 'Failed to process images', 500);
+    console.error('Error processing product media:', error);
+    return errorResponse(res, 'Failed to process media files', 500);
   }
 };
 
@@ -124,9 +160,6 @@ const processCategoryImages = async (req, res, next) => {
  */
 const handleUploadError = (err, req, res, next) => {
   if (err instanceof multer.MulterError) {
-    if (err.code === 'LIMIT_FILE_SIZE') {
-      return errorResponse(res, `File too large. Maximum size: ${IMAGE.MAX_SIZE / (1024 * 1024)}MB`, 400);
-    }
     if (err.code === 'LIMIT_FILE_COUNT') {
       return errorResponse(res, 'Too many files. Maximum: 10 files per upload', 400);
     }
